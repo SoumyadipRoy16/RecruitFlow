@@ -19,7 +19,7 @@
 ## 🛠️ Tech Stack
 ```plaintext
 Frontend: Streamlit
-AI Engine: Groq LLM (Mixtral 8x7b)
+AI Engine: Groq LLM (llama3-70b-8192)
 Database: SQLite
 Email: SMTP + icalendar
 ```
