@@ -1,9 +1,12 @@
 import json
 import groq
-from typing import Dict, Optional
+import logging
+from typing import Dict, Optional, Union
 from utils.config import Config
 from utils.database import DatabaseManager
 from utils.email_sender import EmailSender
+
+logger = logging.getLogger(__name__)
 
 class JobDescriptionSummarizer:
     def __init__(self):
@@ -113,171 +116,186 @@ class RecruitingAgent:
 
 class InterviewScheduler:
     def __init__(self):
-        self.client = groq.Client(api_key=Config.GROQ_API_KEY)
+        self.client = groq.Groq(api_key=Config.GROQ_API_KEY)
         self.db = DatabaseManager()
         self.email_sender = EmailSender()
+        self.max_retries = 3
     
-def generate_interview_email(self, job_title: str, candidate_name: str, 
-                           candidate_email: str = None, match_details: dict = None, 
-                           interview_date: str = None) -> Dict:
-    """
-    Generate interview email content and optionally send it
-    
-    Args:
-        job_title: Title of the job position
-        candidate_name: Name of the candidate
-        candidate_email: Email address (optional)
-        match_details: Dictionary of matching info (optional)
-        interview_date: Scheduled interview datetime (optional)
-        
-    Returns:
-        Dict: {
-            'success': bool,
-            'email_content': dict,
-            'error': str (if any)
+    def _generate_email_template(
+        self,
+        email_type: str,
+        job_title: str,
+        candidate_name: str,
+        match_details: Optional[Dict] = None,
+        interview_date: Optional[str] = None
+    ) -> Dict:
+        """Core template generation logic for all email types"""
+        templates = {
+            "interview": {
+                "prompt": f"""
+                Write a professional interview invitation email in JSON format with:
+                - "subject": string
+                - "body": string
+                - "html_body": string (optional)
+                
+                Include:
+                - Personalized greeting
+                - Job title at {Config.COMPANY_NAME}
+                - Positive feedback
+                - Interview details: {interview_date or 'To be scheduled'}
+                - Confirmation instructions
+                - Professional closing
+                
+                Candidate: {candidate_name}
+                Match Score: {match_details.get('match_score', 'N/A')}%
+                Missing Skills: {', '.join(match_details.get('missing_skills', [])) or 'None'}
+                """,
+                "required_fields": ["subject", "body"]
+            },
+            "rejection": {
+                "prompt": f"""
+                Write a professional rejection email in JSON format with:
+                - "subject": string
+                - "body": string
+                - "html_body": string (optional)
+                
+                Include:
+                - Personalized greeting
+                - Thanks for applying to {job_title}
+                - Positive remarks
+                - Encouragement for future roles
+                - Professional closing
+                
+                Candidate: {candidate_name}
+                Company: {Config.COMPANY_NAME}
+                """,
+                "required_fields": ["subject", "body"]
+            }
         }
-    """
-    if match_details is None:
-        match_details = {}
-    
-    prompt = f"""
-    Write a professional interview invitation email for a candidate who has been shortlisted.
-    The email should be in JSON format with these exact keys:
-    - "subject": string (email subject line)
-    - "body": string (plain text email content)
-    - "html_body": string (optional HTML version)
+        
+        template = templates.get(email_type)
+        if not template:
+            raise ValueError(f"Invalid email type: {email_type}")
 
-    Include these elements:
-    - Personalized greeting
-    - Mention of job title at {Config.COMPANY_NAME}
-    - Positive comment about their application
-    - Interview details if available
-    - Instructions for confirmation
-    - Professional closing
-    
-    Job Title: {job_title}
-    Candidate Name: {candidate_name}
-    Company: {Config.COMPANY_NAME}
-    Match Score: {match_details.get('match_score', 'N/A')}%
-    Interview Date: {interview_date or 'To be scheduled'}
-    """
-    
-    try:
-        response = self.client.chat.completions.create(
-            model=Config.MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.5,
-            response_format={"type": "json_object"}
+        for attempt in range(self.max_retries):
+            try:
+                response = self.client.chat.completions.create(
+                    model=Config.MODEL_NAME,
+                    messages=[{"role": "user", "content": template["prompt"]}],
+                    temperature=0.3,
+                    response_format={"type": "json_object"}
+                )
+                
+                email_content = json.loads(response.choices[0].message.content)
+                
+                # Validate response structure
+                if not all(field in email_content for field in template["required_fields"]):
+                    raise ValueError("Missing required email fields")
+                    
+                return {
+                    'success': True,
+                    'email_content': email_content
+                }
+                
+            except Exception as e:
+                logger.warning(f"Attempt {attempt + 1} failed: {str(e)}")
+                if attempt == self.max_retries - 1:
+                    return {
+                        'success': False,
+                        'error': str(e),
+                        'email_content': None
+                    }
+
+    def generate_interview_email(
+        self,
+        job_title: str,
+        candidate_name: str,
+        candidate_email: Optional[str] = None,
+        match_details: Optional[Dict] = None,
+        interview_date: Optional[str] = None
+    ) -> Dict:
+        """Generate and optionally send interview invitation"""
+        if match_details is None:
+            match_details = {}
+            
+        result = self._generate_email_template(
+            email_type="interview",
+            job_title=job_title,
+            candidate_name=candidate_name,
+            match_details=match_details,
+            interview_date=interview_date
         )
         
-        # Safely parse the JSON response
-        try:
-            email_content = json.loads(response.choices[0].message.content)
+        if not result['success']:
+            return result
             
-            # Validate the response structure
-            if not isinstance(email_content, dict) or 'subject' not in email_content or 'body' not in email_content:
-                return {
-                    'success': False,
-                    'error': 'Invalid email content structure',
-                    'email_content': None
-                }
-        except json.JSONDecodeError as e:
-            return {
-                'success': False,
-                'error': f'Failed to parse email content: {str(e)}',
-                'email_content': None
-            }
-        
         # Send email if recipient provided
         if candidate_email:
+            send_result = self._send_email(
+                email_content=result['email_content'],
+                recipient_email=candidate_email
+            )
+            if not send_result['success']:
+                return send_result
+                
+        return result
+
+    def generate_rejection_email(
+        self,
+        job_title: str,
+        candidate_name: str,
+        candidate_email: Optional[str] = None
+    ) -> Dict:
+        """Generate and optionally send rejection email"""
+        result = self._generate_email_template(
+            email_type="rejection",
+            job_title=job_title,
+            candidate_name=candidate_name
+        )
+        
+        if not result['success']:
+            return result
+            
+        # Send email if recipient provided
+        if candidate_email:
+            send_result = self._send_email(
+                email_content=result['email_content'],
+                recipient_email=candidate_email
+            )
+            if not send_result['success']:
+                return send_result
+                
+        return result
+
+    def _send_email(
+        self,
+        email_content: Dict,
+        recipient_email: str
+    ) -> Dict:
+        """Shared email sending logic"""
+        try:
             success = self.email_sender.send_email(
-                recipient_email=candidate_email,
+                recipient_email=recipient_email,
                 subject=email_content['subject'],
                 body=email_content.get('html_body', email_content['body']),
                 is_html='html_body' in email_content
             )
             
-            if not success:
-                return {
-                    'success': False,
-                    'email_content': email_content,
-                    'error': 'Email sending failed'
-                }
-        
-        return {
-            'success': True,
-            'email_content': email_content
-        }
-        
-    except Exception as e:
-        return {
-            'success': False,
-            'error': str(e),
-            'email_content': None
-        }
-    
-    def generate_rejection_email(self, job_title: str, candidate_name: str, 
-                               candidate_email: str) -> Dict:
-        """
-        Generate and send rejection email
-        
-        Returns:
-            Dict: {
-                'success': bool,
-                'email_content': str,
-                'error': str (if any)
-            }
-        """
-        prompt = f"""
-        Write a professional rejection email for a candidate who applied but wasn't selected.
-        Include:
-        - Personalized greeting
-        - Thank them for their time and application
-        - Mention the job title and company name ({Config.COMPANY_NAME})
-        - Encourage them to apply for future positions
-        - Professional closing
-        
-        Job Title: {job_title}
-        Candidate Name: {candidate_name}
-        Company Name: {Config.COMPANY_NAME}
-        
-        Return a JSON object with these fields:
-        - subject (email subject line)
-        - body (email body text)
-        - html_body (HTML formatted email body, optional)
-        """
-        
-        try:
-            response = self.client.chat.completions.create(
-                model=Config.MODEL_NAME,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.5
-            )
-            
-            email_content = json.loads(response.choices[0].message.content)
-            
-            # Send the email
-            if candidate_email:
-                success = self.email_sender.send_email(
-                    recipient_email=candidate_email,
-                    subject=email_content['subject'],
-                    body=email_content.get('html_body', email_content['body']),
-                    is_html='html_body' in email_content
-                )
+            if success:
+                logger.info(f"Email sent to {recipient_email}")
+                return {'success': True}
                 
-                if not success:
-                    return {
-                        'success': False,
-                        'email_content': email_content,
-                        'error': 'Failed to send email'
-                    }
-            
-            return {
-                'success': True,
-                'email_content': email_content
-            }
-        except Exception as e:
+            logger.error(f"Failed to send email to {recipient_email}")
             return {
                 'success': False,
-                'error': str(e)
+                'error': 'Email sending failed',
+                'email_content': email_content
+            }
+            
+        except Exception as e:
+            logger.error(f"Email error for {recipient_email}: {str(e)}")
+            return {
+                'success': False,
+                'error': str(e),
+                'email_content': email_content
             }

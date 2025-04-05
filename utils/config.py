@@ -22,3 +22,6 @@ class Config:
             raise ValueError("GROQ_API_KEY is not set in environment variables")
         if not Config.EMAIL_ADDRESS or not Config.EMAIL_PASSWORD:
             raise ValueError("Email credentials not set in environment variables")
+
+if not all([Config.SMTP_SERVER, Config.EMAIL_ADDRESS]):
+    raise ValueError("SMTP configuration incomplete")

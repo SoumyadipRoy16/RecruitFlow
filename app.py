@@ -1,3 +1,4 @@
+import logging
 from click import prompt
 import streamlit as st
 import json
@@ -11,13 +12,16 @@ from utils.database import DatabaseManager
 from utils.pdf_processor import PDFProcessor
 from utils.agents import JobDescriptionSummarizer, RecruitingAgent, InterviewScheduler
 
+logger = logging.getLogger(__name__)
+
+
 # Initialize configuration and database
 Config.validate()
 db = DatabaseManager()
 
 # Set page config
 st.set_page_config(
-    page_title="AI Job Screening System",
+    page_title="RecruitFlow",
     page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -187,7 +191,7 @@ def get_match_class(match_score: float) -> str:
         return "match-low"
 
 # Sidebar navigation
-st.sidebar.title("AI Job Screening System")
+st.sidebar.title("RecruitFlow")
 menu_options = [
     "Dashboard",
     "Job Descriptions",
@@ -451,21 +455,63 @@ elif selected_page == "Matching Results":
                                 interview_time = st.time_input("Interview Time")
                                 
                                 if st.form_submit_button("Schedule Interview"):
-                                    interview_datetime = f"{interview_date} {interview_time}"
-                                    db.schedule_interview(selected_match['id'], interview_datetime)
-                                    
-                                    # Generate email
-                                    scheduler = InterviewScheduler()
-                                    email_content = scheduler.generate_interview_email(
-                                        job['title'],
-                                        candidate['name'],
-                                        selected_match
-                                    )
-                                    
-                                    st.markdown("### Interview Email")
-                                    st.text_area("Email Content", email_content, height=200)
-                                    st.success("Interview scheduled and email generated!")
-                                    st.rerun()
+                                    try:
+                                        # Validate inputs
+                                        if not interview_date or not interview_time:
+                                            st.error("Please select both date and time")
+                                            st.stop()
+                                            
+                                        interview_datetime = f"{interview_date} {interview_time}"
+                                        
+                                        # Update database
+                                        db.schedule_interview(selected_match['id'], interview_datetime)
+                                        
+                                        # Generate and send email
+                                        scheduler = InterviewScheduler()
+                                        email_result = scheduler.generate_interview_email(
+                                            job_title=job['title'],
+                                            candidate_name=candidate['name'],
+                                            candidate_email=candidate.get('email'),  # Safe get in case email is None
+                                            match_details={
+                                                'match_score': selected_match['match_score'],
+                                                'job_id': selected_match['job_id'],
+                                                'interview_time': interview_datetime
+                                            },
+                                            interview_date=interview_datetime
+                                        )
+                                        
+                                        if email_result['success']:
+                                            # Show success UI
+                                            st.success("Interview scheduled and email sent successfully!")
+                                            
+                                            # Email preview expander
+                                            with st.expander("View Email Content", expanded=True):
+                                                st.write("**Subject:**", email_result['email_content']['subject'])
+                                                st.text_area("Body", 
+                                                            email_result['email_content'].get('html_body', email_result['email_content']['body']), 
+                                                            height=200)
+                                            
+                                            # Add to activity log
+                                            db.add_feedback(
+                                                selected_match['id'],
+                                                f"Interview scheduled for {interview_datetime}. Email sent: {email_result['email_content']['subject']}"
+                                            )
+                                        else:
+                                            # Show partial success (scheduled but email failed)
+                                            st.warning(f"Interview scheduled but email failed: {email_result.get('error', 'Unknown error')}")
+                                            
+                                            # Show troubleshooting info
+                                            with st.expander("Error Details", expanded=False):
+                                                st.write(email_result)
+                                                if 'email_content' in email_result:
+                                                    st.write("Generated Content:", email_result['email_content'])
+                                        
+                                        # Force UI update
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Failed to schedule interview: {str(e)}")
+                                        logger.exception("Interview scheduling error")
+                                        st.stop()
                         else:
                             st.info(f"Interview scheduled for {selected_match['interview_date']}")
         else:
@@ -633,6 +679,6 @@ elif selected_page == "Interview Scheduling":
 st.markdown("---")
 st.markdown("""
     <div style="text-align: center; color: #7f8c8d; font-size: 0.9em;">
-        <p>AI Job Screening System • Powered by Groq LLM and Streamlit</p>
+        <p>RecruitFlow • Powered by Groq LLM and Streamlit</p>
     </div>
 """, unsafe_allow_html=True)
