@@ -4,7 +4,6 @@ numpy
 groq
 PyPDF2
 pdfminer
-python-dotenv
 smtplib
 sqlite3
 typing-extensions
