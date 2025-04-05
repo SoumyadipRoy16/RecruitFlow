@@ -6,7 +6,6 @@ import os
 import time
 from pathlib import Path
 import pandas as pd
-import plotly.express as px
 from utils.config import Config
 from utils.database import DatabaseManager
 from utils.pdf_processor import PDFProcessor
