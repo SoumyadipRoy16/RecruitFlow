@@ -1,0 +1,13 @@
+streamlit
+pandas
+numpy
+groq
+PyPDF2
+pdfminer
+pillow
+pytesseract
+python-dotenv
+smtplib
+sqlite3
+typing-extensions
+tqdm
