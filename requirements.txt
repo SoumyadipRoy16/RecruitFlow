@@ -4,7 +4,6 @@ numpy
 groq
 PyPDF2
 pdfminer
-smtplib
 sqlite3
 typing-extensions
 tqdm
